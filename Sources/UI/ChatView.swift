@@ -19,6 +19,20 @@ struct ChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
+                        if let note = session.crashNote {
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warn)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Previous run stopped").font(.caption).bold()
+                                    Text(note).font(.caption2).foregroundStyle(Theme.textDim)
+                                    Text("Low memory mode is on. Settings → Diagnostics has a test run.").font(.caption2)
+                                }
+                                Spacer()
+                                Button { session.crashNote = nil } label: { Image(systemName: "xmark") }
+                            }
+                            .padding(10)
+                            .background(Theme.surfaceAlt, in: RoundedRectangle(cornerRadius: 12))
+                        }
                         if messages.isEmpty { emptyState }
                         ForEach(messages) { message in
                             MessageBubble(

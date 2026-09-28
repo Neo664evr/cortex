@@ -9,6 +9,7 @@ struct GenSettings: Codable, Equatable {
     var topK: Int32 = 40
     var repeatPenalty: Float = 1.1
     var gpuLayers: Int32 = 999
+    var lowMemory = false
     var systemPrompt = "You are Cortex, a helpful on-device assistant. Answer clearly and never claim to be a cloud service."
 }
 
@@ -22,6 +23,8 @@ final class Session: ObservableObject {
     @Published var speakReplies = false
     @Published var showStats = true
     @Published var lastStats: Inference.GenStats?
+    @Published var crashNote: String?
+    @Published var diagnosticsReport = ""
 
     let engine = Inference()
     let speech = Speech()
@@ -32,6 +35,25 @@ final class Session: ObservableObject {
 
     init() {
         load()
+        if let stale = Breadcrumb.stale() {
+            crashNote = "Last session stopped while: \(stale)"
+            settings.lowMemory = true
+            settings.contextLength = 2048
+            settings.maxTokens = 256
+            persist()
+            LogSink.shared.append("crash breadcrumb found: \(stale) — switched to low memory mode")
+        }
+        Breadcrumb.clear()
+    }
+
+    /// Trims the conversation so the prompt cannot blow past the loaded context window.
+    private func trimmed(_ messages: [ChatMessage]) -> [ChatMessage] {
+        var result = messages
+        let budget = Int(settings.contextLength) * 3
+        while result.count > 2, result.reduce(0, { $0 + $1.text.count }) > budget {
+            result.removeFirst()
+        }
+        return result
     }
 
     func persist() {
@@ -57,6 +79,25 @@ final class Session: ObservableObject {
 
     func modelInfo() -> [Inference.ModelFact] { engine.modelInfo() }
 
+    /// Runs the engine smoke test and stores the report for the Diagnostics screen.
+    func runDiagnostics(models: ModelStore, gpuLayers: Int32) async {
+        guard let model = models.selectedModel else {
+            diagnosticsReport = "No model selected."
+            return
+        }
+        status = "diagnostics…"
+        diagnosticsReport = "…running, this can take a minute"
+        let report = await engine.smokeTest(modelPath: model.path,
+                                            projectorPath: models.selectedProjector?.path,
+                                            settings: settings,
+                                            gpuLayers: gpuLayers)
+        diagnosticsReport = report + "\n— engine log —\n" + LogSink.shared.tail()
+        status = engine.isLoaded ? "ready · \(engine.contextSize) ctx" : "idle"
+    }
+
+    /// Free memory hint for the UI.
+    var memoryNote: String { engine.deviceMemoryNote }
+
     func loadSelection(models: ModelStore, force: Bool) async {
         guard let model = models.selectedModel else {
             errorMessage = "Import a GGUF model first."
@@ -65,13 +106,16 @@ final class Session: ObservableObject {
         if !force, engine.loadedModel == model.path, engine.isLoaded { return }
         status = "loading \(model.name)…"
         errorMessage = nil
+        Breadcrumb.set("loading \(model.name) · ctx \(settings.contextLength) · gpu \(settings.gpuLayers)")
         do {
             try await engine.loadAsync(modelPath: model.path,
                                        projectorPath: models.selectedProjector?.path,
                                        settings: settings)
+            Breadcrumb.set("loaded \(model.name)")
         } catch {
             errorMessage = error.localizedDescription
             status = ""
+            Breadcrumb.clear()
             return
         }
         status = engine.isLoaded ? "ready · \(engine.hasVision ? "vision " : "")\(engine.contextSize) ctx" : "not loaded"
@@ -124,7 +168,7 @@ final class Session: ObservableObject {
     }
 
     private func generate(chatID: UUID, chats: ChatStore, models: ModelStore, systemPrompt: String) {
-        let history = chats.messages(for: chatID)
+        let history = trimmed(chats.messages(for: chatID))
         let prompt = systemPrompt.isEmpty ? settings.systemPrompt : systemPrompt
         let projectorPath = models.selectedProjector?.path
         isGenerating = true
@@ -136,7 +180,9 @@ final class Session: ObservableObject {
                 if let model = models.selectedModel,
                    !self.engine.isLoaded || self.engine.loadedModel != model.path {
                     self.status = "loading \(model.name)…"
+                    Breadcrumb.set("loading \(model.name) · ctx \(self.settings.contextLength) · gpu \(self.settings.gpuLayers)")
                     try await self.engine.loadAsync(modelPath: model.path, projectorPath: projectorPath, settings: self.settings)
+                    Breadcrumb.set("loaded \(model.name)")
                 }
                 guard let model = models.selectedModel else {
                     self.isGenerating = false
@@ -149,6 +195,7 @@ final class Session: ObservableObject {
                 var buffer = ""
                 var lastUpdate = Date.distantPast
 
+                Breadcrumb.set("generating · ctx \(self.settings.contextLength) · gpu \(self.settings.gpuLayers)")
                 let payload = TurnPayload(systemPrompt: prompt, history: history)
                 for try await piece in self.engine.stream(payload: payload, settings: self.settings) {
                     if Task.isCancelled { break }
@@ -165,6 +212,7 @@ final class Session: ObservableObject {
                     self.lastStats = stats
                     chats.setStats(stats.label, messageID: placeholder.id, in: chatID)
                 }
+                Breadcrumb.clear()
                 if self.speakReplies, !buffer.isEmpty { self.speech.speak(buffer) }
                 self.status = self.engine.isLoaded ? "ready · \(self.engine.contextSize) ctx" : "idle"
             } catch {

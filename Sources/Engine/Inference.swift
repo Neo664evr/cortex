@@ -41,8 +41,42 @@ func llama_batch_add(_ batch: inout llama_batch, _ id: llama_token, _ pos: llama
     batch.n_tokens += 1
 }
 
+/// Serial worker with a big stack. llama.cpp + Metal work can be stack hungry and a
+/// default dispatch queue only gets 512 KB, which is enough to kill the process.
+final class BigStackWorker {
+    private let semaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var jobs: [() -> Void] = []
+    private var thread: Thread?
+
+    init(name: String, stackSize: Int = 8 * 1024 * 1024) {
+        let thread = Thread { [weak self] in
+            guard let self else { return }
+            while true {
+                self.semaphore.wait()
+                self.lock.lock()
+                let job = self.jobs.isEmpty ? nil : self.jobs.removeFirst()
+                self.lock.unlock()
+                job?()
+            }
+        }
+        thread.name = name
+        thread.stackSize = stackSize
+        thread.qualityOfService = .userInitiated
+        self.thread = thread
+        thread.start()
+    }
+
+    func async(_ job: @escaping () -> Void) {
+        lock.lock()
+        jobs.append(job)
+        lock.unlock()
+        semaphore.signal()
+    }
+}
+
 /// Owns the llama.cpp model, context and (optional) multimodal projector.
-/// All work happens on a private serial queue.
+/// All work happens on a private serial worker thread.
 final class Inference {
     private var model: OpaquePointer?
     private var ctx: OpaquePointer?
@@ -57,7 +91,7 @@ final class Inference {
     private var activeMmproj: String?
     private var settings = GenSettings()
 
-    private let queue = DispatchQueue(label: "com.neo664evr.cortex.inference", qos: .userInitiated)
+    private let queue = BigStackWorker(name: "cortex-inference")
 
     struct GenStats {
         var promptTokens: Int
@@ -70,6 +104,14 @@ final class Inference {
     }
 
     private(set) var lastStats: GenStats?
+
+    init() {
+        llama_log_set({ _, text, _ in
+            guard let text else { return }
+            LogSink.shared.append(String(cString: text))
+        }, nil)
+        LogSink.shared.append("engine init · \(ProcessInfo.processInfo.physicalMemory / 1_073_741_824) GB device")
+    }
 
     var isLoaded: Bool { model != nil && ctx != nil }
     var contextSize: Int32 { ctx != nil ? Int32(llama_n_ctx(ctx)) : 0 }
@@ -98,6 +140,32 @@ final class Inference {
     }
     var loadedModel: String? { activeModel }
     var hasVision: Bool { mtmd != nil }
+
+    var deviceMemoryNote: String {
+        String(format: "%.0f GB device RAM", Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824)
+    }
+
+    /// Loads and generates a handful of tokens, returning everything the engine logged.
+    /// Used by the Diagnostics screen so a broken model reveals itself without a chat.
+    func smokeTest(modelPath: String, projectorPath: String?, settings: GenSettings, gpuLayers: Int32) async -> String {
+        var report = "test: gpu layers \(gpuLayers), ctx \(settings.contextLength)\n"
+        var probe = settings
+        probe.gpuLayers = gpuLayers
+        probe.maxTokens = 12
+        do {
+            try await loadAsync(modelPath: modelPath, projectorPath: projectorPath, settings: probe)
+            report += "model loaded\n"
+            let payload = TurnPayload(systemPrompt: "You are a test harness.",
+                                      history: [ChatMessage(role: .user, text: "Reply with the single word OK.")])
+            var output = ""
+            for try await piece in stream(payload: payload, settings: probe) { output += piece }
+            report += "output: \(output.isEmpty ? "(empty)" : output)\n"
+            if let lastStats { report += lastStats.label + "\n" }
+        } catch {
+            report += "error: \(error.localizedDescription)\n"
+        }
+        return report
+    }
 
     func stop() {
         queue.async { self.stopFlag = true }
@@ -132,11 +200,20 @@ final class Inference {
         self.settings = settings
         if activeModel == modelPath && activeMmproj == (mmprojPath ?? "") && isLoaded { return }
         unload()
+        do {
+            try loadOnce(modelPath: modelPath, mmprojPath: mmprojPath, settings: settings, gpuLayers: settings.gpuLayers)
+        } catch {
+            LogSink.shared.append("load failed with \(settings.gpuLayers) GPU layers: \(error.localizedDescription) — retrying CPU only")
+            unload()
+            try loadOnce(modelPath: modelPath, mmprojPath: mmprojPath, settings: settings, gpuLayers: 0)
+        }
+    }
 
+    private func loadOnce(modelPath: String, mmprojPath: String?, settings: GenSettings, gpuLayers: Int32) throws {
         llama_backend_init()
 
         var mparams = llama_model_default_params()
-        mparams.n_gpu_layers = settings.gpuLayers
+        mparams.n_gpu_layers = gpuLayers
         guard let loaded = llama_model_load_from_file(modelPath, mparams) else {
             throw InferenceError.modelLoad(modelPath)
         }
@@ -150,6 +227,10 @@ final class Inference {
         cparams.n_ubatch = 512
         cparams.n_threads = threads
         cparams.n_threads_batch = threads
+        // 8-bit KV cache: roughly half the memory of f16, which is what tips a 9B model
+        // over the edge on a 12 GB phone.
+        cparams.type_k = GGML_TYPE_Q8_0
+        cparams.type_v = GGML_TYPE_Q8_0
         guard let context = llama_init_from_model(loaded, cparams) else {
             llama_model_free(loaded)
             model = nil

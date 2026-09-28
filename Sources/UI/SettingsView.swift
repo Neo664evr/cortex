@@ -94,7 +94,19 @@ struct SettingsView: View {
                             in: 0...999, step: 8)
                     Toggle("Show speed stats", isOn: Binding(get: { session.showStats },
                                                              set: { session.showStats = $0; session.persist() }))
+                    Toggle("Low memory mode", isOn: Binding(get: { session.settings.lowMemory },
+                                                            set: { value in
+                                                                session.settings.lowMemory = value
+                                                                if value {
+                                                                    session.settings.contextLength = 2048
+                                                                    session.settings.maxTokens = 256
+                                                                }
+                                                                session.persist()
+                                                            }))
                 } header: { SectionHeader(title: "Sampling & memory") }
+                  footer: {
+                    Text("Low memory mode drops the context to 2048 and replies to 256 tokens. KV cache already runs 8-bit, which is about half the memory of 16-bit.")
+                }
 
                 Section {
                     Toggle("Speak replies", isOn: Binding(get: { session.speakReplies },
@@ -119,9 +131,34 @@ struct SettingsView: View {
                 } header: { SectionHeader(title: "Voice") }
 
                 Section {
+                    LabeledContent("Device", value: session.memoryNote)
+                    LabeledContent("Log file", value: "Files → On My iPhone → Cortex → cortex.log")
+                    Button {
+                        Task { await session.runDiagnostics(models: models, gpuLayers: session.settings.gpuLayers) }
+                    } label: { Label("Test run (Metal)", systemImage: "bolt") }
+                    Button {
+                        Task { await session.runDiagnostics(models: models, gpuLayers: 0) }
+                    } label: { Label("Test run (CPU only)", systemImage: "cpu") }
+                    if !session.diagnosticsReport.isEmpty {
+                        ScrollView(.vertical) {
+                            Text(session.diagnosticsReport)
+                                .font(.system(.caption2, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 260)
+                        ShareLink(item: session.diagnosticsReport) { Label("Share report", systemImage: "square.and.arrow.up") }
+                    }
+                    Button("Clear engine log") {
+                        LogSink.shared.clear()
+                        session.diagnosticsReport = ""
+                    }
+                } header: { SectionHeader(title: "Diagnostics") }
+
+                Section {
                     Button { session.unload() } label: { Label("Unload model", systemImage: "eject") }
                     LabeledContent("Engine", value: "llama.cpp v0.5.0 · Metal")
-                    LabeledContent("Build", value: "Cortex 2.0")
+                    LabeledContent("Build", value: "Cortex 2.1")
                     LabeledContent("Models", value: "\(models.models.count) · \(models.projectors.count) projectors")
                     Button("Reset sampler settings") {
                         session.settings = GenSettings()
