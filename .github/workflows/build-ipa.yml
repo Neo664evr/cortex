@@ -53,7 +53,7 @@ jobs:
             -configuration Release \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            build | tail -60
+            build
 
       - name: Package unsigned IPA
         run: |
@@ -61,11 +61,21 @@ jobs:
           APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
           echo "App: $APP"
           test -n "$APP"
+
+          # Document sharing / Files-app visibility
+          /usr/libexec/PlistBuddy -c "Add :UIFileSharingEnabled bool true" "$APP/Info.plist" || true
+          /usr/libexec/PlistBuddy -c "Add :LSSupportsOpeningDocumentsInPlace bool true" "$APP/Info.plist" || true
+          /usr/libexec/PlistBuddy -c "Print" "$APP/Info.plist" | head -30
+
+          # The llama.framework is dynamic, so it must be embedded or dyld fails at launch.
+          test -f "$APP/Frameworks/llama.framework/llama" || { echo "::error::llama.framework not embedded"; exit 1; }
+          otool -L "$APP/Cortex" | head -20
+
           rm -rf Payload Cortex-unsigned.ipa
           mkdir Payload
           cp -R "$APP" Payload/
           zip -qry Cortex-unsigned.ipa Payload
-          unzip -l Cortex-unsigned.ipa | head -12
+          unzip -l Cortex-unsigned.ipa | head -20
           ls -l Cortex-unsigned.ipa
 
       - name: Upload IPA
