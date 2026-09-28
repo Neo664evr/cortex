@@ -1,119 +1,177 @@
 import Foundation
 import SwiftUI
 
+struct GenSettings: Codable, Equatable {
+    var contextLength: Int32 = 8192
+    var maxTokens: Int32 = 512
+    var temperature: Float = 0.7
+    var topP: Float = 0.95
+    var topK: Int32 = 40
+    var repeatPenalty: Float = 1.1
+    var gpuLayers: Int32 = 999
+    var systemPrompt = "You are Cortex, a helpful on-device assistant. Answer clearly and never claim to be a cloud service."
+}
+
 @MainActor
 final class Session: ObservableObject {
-    @Published var isGenerating = false
-    @Published var status: String = ""
-    @Published var errorMessage: String?
     @Published var settings = GenSettings()
+    @Published var status = ""
+    @Published var errorMessage: String?
+    @Published var isGenerating = false
+    @Published var currentChatID: UUID?
     @Published var speakReplies = false
+    @Published var showStats = true
+    @Published var lastStats: Inference.GenStats?
 
     let engine = Inference()
     let speech = Speech()
+    let voice = VoiceInput()
 
-    private let settingsKey = "cortex.settings"
+    private var generationTask: Task<Void, Never>?
+    private let defaults = UserDefaults.standard
 
     init() {
-        if let data = UserDefaults.standard.data(forKey: settingsKey),
-           let decoded = try? JSONDecoder().decode(GenSettings.self, from: data) {
-            settings = decoded
-        }
-        if UserDefaults.standard.object(forKey: "cortex.speak") != nil {
-            speakReplies = UserDefaults.standard.bool(forKey: "cortex.speak")
-        }
+        load()
     }
 
     func persist() {
         if let data = try? JSONEncoder().encode(settings) {
-            UserDefaults.standard.set(data, forKey: settingsKey)
+            defaults.set(data, forKey: "cortex.settings")
         }
-        UserDefaults.standard.set(speakReplies, forKey: "cortex.speak")
+        defaults.set(speakReplies, forKey: "cortex.speakReplies")
+        defaults.set(showStats, forKey: "cortex.showStats")
     }
 
-    func loadSelection(models: ModelStore) async {
+    func load() {
+        if let data = defaults.data(forKey: "cortex.settings"),
+           let decoded = try? JSONDecoder().decode(GenSettings.self, from: data) {
+            settings = decoded
+        }
+        if defaults.object(forKey: "cortex.speakReplies") != nil {
+            speakReplies = defaults.bool(forKey: "cortex.speakReplies")
+        }
+        if defaults.object(forKey: "cortex.showStats") != nil {
+            showStats = defaults.bool(forKey: "cortex.showStats")
+        }
+    }
+
+    func modelInfo() -> [Inference.ModelFact] { engine.modelInfo() }
+
+    func loadSelection(models: ModelStore, force: Bool) async {
         guard let model = models.selectedModel else {
-            status = "No model imported yet"
+            errorMessage = "Import a GGUF model first."
             return
         }
-        let mmproj = models.selectedProjector?.path
-        status = "Loading \(model.name)…"
-        let snapshot = settings
+        if !force, engine.loadedModel == model.path, engine.isLoaded { return }
+        status = "loading \(model.name)…"
+        errorMessage = nil
         do {
-            try await Task.detached(priority: .userInitiated) {
-                try self.engine.load(modelPath: model.path, mmprojPath: mmproj, settings: snapshot)
-            }.value
-            status = self.engine.hasVision ? "Ready — vision enabled" : "Ready"
+            try await engine.loadAsync(modelPath: model.path,
+                                       projectorPath: models.selectedProjector?.path,
+                                       settings: settings)
         } catch {
-            status = "Load failed"
             errorMessage = error.localizedDescription
+            status = ""
+            return
         }
+        status = engine.isLoaded ? "ready · \(engine.hasVision ? "vision " : "")\(engine.contextSize) ctx" : "not loaded"
     }
 
-    func send(text: String, attachments: [Attachment], chatID: UUID, chats: ChatStore, models: ModelStore) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
-
-        let userMessage = ChatMessage(role: .user, text: trimmed, attachments: attachments)
-        chats.append(userMessage, to: chatID)
-        let history = chats.messages(for: chatID)
-
-        let assistant = ChatMessage(role: .assistant, text: "")
-        chats.append(assistant, to: chatID)
-        isGenerating = true
-        errorMessage = nil
-
-        Task {
-            if !engine.isLoaded || engine.loadedModel != models.selectedModel?.path {
-                await loadSelection(models: models)
-            }
-            guard engine.isLoaded else { isGenerating = false; return }
-
-            var buffer = ""
-            do {
-                let stream = engine.stream(payload: TurnPayload(systemPrompt: settings.systemPrompt, history: history), settings: settings)
-                for try await delta in stream {
-                    buffer += delta
-                    chats.update(messageID: assistant.id, in: chatID, text: buffer)
-                }
-            } catch {
-                errorMessage = error.localizedDescription
-                if buffer.isEmpty {
-                    buffer = "(generation failed: \(error.localizedDescription))"
-                    chats.update(messageID: assistant.id, in: chatID, text: buffer)
-                }
-            }
-            isGenerating = false
-            if speakReplies, !buffer.isEmpty { speech.speak(buffer) }
-        }
+    func unload() {
+        stop()
+        engine.unload()
+        status = "unloaded"
     }
 
     func stop() {
-        engine.stop()
-        speech.stop()
+        generationTask?.cancel()
+        generationTask = nil
         isGenerating = false
+        engine.stop()
     }
 
-    func regenerate(chatID: UUID, chats: ChatStore, models: ModelStore) {
-        chats.removeLastTurn(in: chatID)
-        isGenerating = false
-        Task {
-            if !engine.isLoaded { await loadSelection(models: models) }
-            let history = chats.messages(for: chatID)
-            let assistant = ChatMessage(role: .assistant, text: "")
-            chats.append(assistant, to: chatID)
-            isGenerating = true
-            var buffer = ""
+    func send(text: String, attachments: [Attachment], chatID: UUID, chats: ChatStore, models: ModelStore, systemPrompt: String) {
+        guard !isGenerating else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
+        chats.append(ChatMessage(role: .user, text: trimmed, attachments: attachments), to: chatID)
+        if chats.chats.first(where: { $0.id == chatID })?.title == "New chat", !trimmed.isEmpty {
+            chats.retitle(chatID, with: trimmed)
+        }
+        generate(chatID: chatID, chats: chats, models: models, systemPrompt: systemPrompt)
+    }
+
+    /// Regenerates an assistant reply, keeping the conversation up to that point.
+    func branch(from messageID: UUID, chatID: UUID, chats: ChatStore, models: ModelStore, systemPrompt: String) {
+        guard !isGenerating else { return }
+        guard let index = chats.messages(for: chatID).firstIndex(where: { $0.id == messageID }) else { return }
+        let kept = Array(chats.messages(for: chatID).prefix(index))
+        guard let last = kept.last, last.role == .user else {
+            chats.replaceMessages(kept, in: chatID)
+            return
+        }
+        chats.replaceMessages(kept, in: chatID)
+        generate(chatID: chatID, chats: chats, models: models, systemPrompt: systemPrompt)
+    }
+
+    func regenerate(chatID: UUID, chats: ChatStore, models: ModelStore, systemPrompt: String) {
+        guard !isGenerating else { return }
+        var messages = chats.messages(for: chatID)
+        while let last = messages.last, last.role == .assistant { messages.removeLast() }
+        guard !messages.isEmpty else { return }
+        chats.replaceMessages(messages, in: chatID)
+        generate(chatID: chatID, chats: chats, models: models, systemPrompt: systemPrompt)
+    }
+
+    private func generate(chatID: UUID, chats: ChatStore, models: ModelStore, systemPrompt: String) {
+        let history = chats.messages(for: chatID)
+        let prompt = systemPrompt.isEmpty ? settings.systemPrompt : systemPrompt
+        let projectorPath = models.selectedProjector?.path
+        isGenerating = true
+        errorMessage = nil
+
+        generationTask = Task { [weak self] in
+            guard let self else { return }
             do {
-                let stream = engine.stream(payload: TurnPayload(systemPrompt: settings.systemPrompt, history: history), settings: settings)
-                for try await delta in stream {
-                    buffer += delta
-                    chats.update(messageID: assistant.id, in: chatID, text: buffer)
+                if let model = models.selectedModel,
+                   !self.engine.isLoaded || self.engine.loadedModel != model.path {
+                    self.status = "loading \(model.name)…"
+                    try await self.engine.loadAsync(modelPath: model.path, projectorPath: projectorPath, settings: self.settings)
                 }
+                guard let model = models.selectedModel else {
+                    self.isGenerating = false
+                    self.errorMessage = "No model selected."
+                    return
+                }
+
+                let placeholder = ChatMessage(role: .assistant, text: "")
+                chats.append(placeholder, to: chatID)
+                var buffer = ""
+                var lastUpdate = Date.distantPast
+
+                let payload = TurnPayload(systemPrompt: prompt, history: history)
+                for try await piece in self.engine.stream(payload: payload, settings: self.settings) {
+                    if Task.isCancelled { break }
+                    buffer += piece
+                    let now = Date()
+                    if now.timeIntervalSince(lastUpdate) > 0.08 {
+                        lastUpdate = now
+                        chats.update(messageID: placeholder.id, in: chatID, text: buffer)
+                    }
+                }
+                chats.update(messageID: placeholder.id, in: chatID, text: buffer)
+
+                if let stats = self.engine.lastStats {
+                    self.lastStats = stats
+                    chats.setStats(stats.label, messageID: placeholder.id, in: chatID)
+                }
+                if self.speakReplies, !buffer.isEmpty { self.speech.speak(buffer) }
+                self.status = self.engine.isLoaded ? "ready · \(self.engine.contextSize) ctx" : "idle"
             } catch {
-                errorMessage = error.localizedDescription
+                self.errorMessage = error.localizedDescription
+                chats.append(ChatMessage(role: .assistant, text: "⚠️ \(error.localizedDescription)"), to: chatID)
             }
-            isGenerating = false
+            self.isGenerating = false
         }
     }
 }

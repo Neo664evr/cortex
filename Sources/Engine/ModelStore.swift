@@ -14,8 +14,34 @@ struct LocalModel: Identifiable, Hashable, Codable {
 
     var id: String { path }
 
-    var sizeLabel: String {
-        ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+    var sizeLabel: String { ByteCountFormatter.string(fromByteCount: size, countStyle: .file) }
+
+    var parameterHint: String? {
+        let characters = Array(name.lowercased())
+        var digits = ""
+        for index in characters.indices {
+            let character = characters[index]
+            if character.isNumber || (character == "." && !digits.isEmpty) {
+                digits.append(character)
+                continue
+            }
+            if character == "b", !digits.isEmpty {
+                let next = index + 1 < characters.count ? characters[index + 1] : " "
+                if !next.isLetter && !next.isNumber {
+                    return digits.uppercased() + "B"
+                }
+            }
+            digits = ""
+        }
+        return nil
+    }
+
+    var quantHint: String? {
+        let upper = name.uppercased()
+        for quant in ["Q8_0", "Q6_K", "Q5_K_M", "Q5_K_S", "Q4_K_M", "Q4_K_S", "Q4_0", "Q3_K_M", "Q3_K_S", "Q2_K", "IQ4_XS", "IQ4_NL", "IQ3_M", "IQ2_M", "F16", "BF16", "FP16"] {
+            if upper.contains(quant) { return quant }
+        }
+        return nil
     }
 }
 
@@ -27,30 +53,47 @@ final class ModelStore: ObservableObject {
     @Published var selectedProjector: LocalModel? { didSet { persistSelection() } }
     @Published var errorMessage: String?
 
+    private let documents: URL
     private let root: URL
     private let defaults = UserDefaults.standard
     private let modelKey = "cortex.selected.model"
     private let projectorKey = "cortex.selected.projector"
 
     init() {
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         root = documents.appendingPathComponent("Models", isDirectory: true)
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         reload()
     }
 
     var modelsDirectory: URL { root }
+    var documentsDirectory: URL { documents }
 
+    /// Scans the whole Documents tree plus Models, so files dropped in through the
+    /// Files app ("On My iPhone -> Cortex") appear without going through the picker.
     func reload() {
         let manager = FileManager.default
-        let entries = (try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.fileSizeKey, .nameKey], options: [.skipsHiddenFiles])) ?? []
         var found: [LocalModel] = []
-        for url in entries where url.pathExtension.lowercased() == "gguf" {
+        var seen = Set<String>()
+
+        func consider(_ url: URL) {
+            guard url.pathExtension.lowercased() == "gguf" else { return }
+            let path = url.standardizedFileURL.path
+            guard !seen.contains(path) else { return }
+            seen.insert(path)
             let size = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-            let name = url.lastPathComponent
-            let kind: ModelKind = isProjectorName(name) ? .projector : .model
-            found.append(LocalModel(path: url.path, name: name, size: size, kind: kind))
+            let kind: ModelKind = isModelProjector(url.lastPathComponent) ? .projector : .model
+            found.append(LocalModel(path: path, name: url.lastPathComponent, size: size, kind: kind))
         }
+
+        for directory in [root, documents] {
+            guard let enumerator = manager.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey], options: [.skipsHiddenFiles]) else { continue }
+            for case let url as URL in enumerator {
+                if url.pathComponents.count - documents.pathComponents.count > 3 { enumerator.skipDescendants(); continue }
+                consider(url)
+            }
+        }
+
         found.sort { $0.name.lowercased() < $1.name.lowercased() }
         models = found.filter { $0.kind == .model }
         projectors = found.filter { $0.kind == .projector }
@@ -65,9 +108,10 @@ final class ModelStore: ObservableObject {
         } else if let current = selectedProjector, !projectors.contains(where: { $0.path == current.path }) {
             selectedProjector = projectors.first
         }
+        if selectedProjector == nil, projectors.count == 1 { selectedProjector = projectors.first }
     }
 
-    func isProjectorName(_ name: String) -> Bool {
+    func isModelProjector(_ name: String) -> Bool {
         let lower = name.lowercased()
         return lower.contains("mmproj") || lower.contains("projector") || lower.contains("vision")
     }
@@ -76,6 +120,10 @@ final class ModelStore: ObservableObject {
         let manager = FileManager.default
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard url.pathExtension.lowercased() == "gguf" else {
+            errorMessage = "\(url.lastPathComponent) is not a .gguf file."
+            return
+        }
         do {
             var destination = root.appendingPathComponent(url.lastPathComponent)
             if manager.fileExists(atPath: destination.path) {
@@ -85,17 +133,26 @@ final class ModelStore: ObservableObject {
             try manager.copyItem(at: url, to: destination)
             reload()
         } catch {
-            errorMessage = "Import failed: \(error.localizedDescription)"
+            errorMessage = "Could not import \(url.lastPathComponent): \(error.localizedDescription). If it lives in iCloud Drive, download it from a URL instead, or copy it in with the Files app."
         }
     }
 
-    func importFiles(_ urls: [URL]) {
-        for url in urls { importFile(url) }
-    }
+    func importFiles(_ urls: [URL]) { urls.forEach(importFile) }
 
     func delete(_ model: LocalModel) {
         try? FileManager.default.removeItem(atPath: model.path)
         reload()
+    }
+
+    func rename(_ model: LocalModel, to newName: String) {
+        let clean = newName.lowercased().hasSuffix(".gguf") ? newName : newName + ".gguf"
+        let destination = root.appendingPathComponent(clean)
+        do {
+            try FileManager.default.moveItem(atPath: model.path, toPath: destination.path)
+            reload()
+        } catch {
+            errorMessage = "Rename failed: \(error.localizedDescription)"
+        }
     }
 
     private func persistSelection() {

@@ -1,5 +1,6 @@
 import Foundation
 import PDFKit
+import UIKit
 
 enum FileText {
     static let maxCharacters = 24000

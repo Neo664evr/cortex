@@ -2,17 +2,6 @@ import Foundation
 import UIKit
 import llama
 
-struct GenSettings: Codable, Equatable {
-    var contextLength: Int32 = 4096
-    var maxTokens: Int32 = 600
-    var temperature: Float = 0.7
-    var topP: Float = 0.95
-    var topK: Int32 = 40
-    var repeatPenalty: Float = 1.08
-    var gpuLayers: Int32 = 99
-    var systemPrompt: String = "You are Cortex, a concise and capable assistant running entirely on this iPhone. You can see images and read files the user attaches."
-}
-
 enum InferenceError: LocalizedError {
     case modelLoad(String)
     case contextCreate
@@ -83,10 +72,16 @@ final class Inference {
     private(set) var lastStats: GenStats?
 
     var isLoaded: Bool { model != nil && ctx != nil }
-    var contextSize: Int32 { ctx != nil ? llama_n_ctx(ctx) : 0 }
+    var contextSize: Int32 { ctx != nil ? Int32(llama_n_ctx(ctx)) : 0 }
+
+    struct ModelFact: Identifiable {
+        let id = UUID()
+        let label: String
+        let value: String
+    }
 
     /// Human-readable model facts for the Models screen.
-    func modelInfo() -> [(String, String)] {
+    func modelInfo() -> [ModelFact] {
         guard let model else { return [] }
         var buffer = [CChar](repeating: 0, count: 256)
         llama_model_desc(model, &buffer, 256)
@@ -94,11 +89,11 @@ final class Inference {
         let params = Double(llama_model_n_params(model)) / 1_000_000_000
         let trained = llama_model_n_ctx_train(model)
         return [
-            ("Model", description),
-            ("Parameters", String(format: "%.2f B", params)),
-            ("Trained context", "\(trained)"),
-            ("Loaded context", "\(contextSize)"),
-            ("Vision", hasVision ? "on" : "off")
+            ModelFact(label: "Model", value: description),
+            ModelFact(label: "Parameters", value: String(format: "%.2f B", params)),
+            ModelFact(label: "Trained context", value: "\(trained)"),
+            ModelFact(label: "Loaded context", value: "\(contextSize)"),
+            ModelFact(label: "Vision", value: hasVision ? "on" : "off")
         ]
     }
     var loadedModel: String? { activeModel }
@@ -117,6 +112,20 @@ final class Inference {
         vocab = nil
         activeModel = nil
         activeMmproj = nil
+    }
+
+    /// Loads on the private queue so the UI keeps animating during a big model load.
+    func loadAsync(modelPath: String, projectorPath: String?, settings: GenSettings) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async {
+                do {
+                    try self.load(modelPath: modelPath, mmprojPath: projectorPath, settings: settings)
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     func load(modelPath: String, mmprojPath: String?, settings: GenSettings) throws {

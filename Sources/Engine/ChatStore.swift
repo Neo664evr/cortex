@@ -75,6 +75,21 @@ final class ChatStore: ObservableObject {
         save()
     }
 
+    func retitle(_ chatID: UUID, with text: String) {
+        guard let index = chats.firstIndex(where: { $0.id == chatID }) else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        chats[index].title = String(trimmed.prefix(40))
+        save()
+    }
+
+    func replaceMessages(_ messages: [ChatMessage], in chatID: UUID) {
+        guard let index = chats.firstIndex(where: { $0.id == chatID }) else { return }
+        chats[index].messages = messages
+        chats[index].updatedAt = Date()
+        save()
+    }
+
     func append(_ message: ChatMessage, to chatID: UUID) {
         guard let index = chats.firstIndex(where: { $0.id == chatID }) else { return }
         chats[index].messages.append(message)
