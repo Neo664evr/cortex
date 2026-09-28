@@ -92,6 +92,11 @@ struct SettingsView: View {
                             value: Binding(get: { Int(session.settings.gpuLayers) },
                                            set: { session.settings.gpuLayers = Int32($0); session.persist() }),
                             in: 0...999, step: 8)
+                    Text(session.settings.gpuLayers == 0
+                         ? "CPU only — slowest but will not hit the GPU memory ceiling."
+                         : "Offloading \(Int(session.settings.gpuLayers)) layers to Metal. If the app dies during load, this is why: drop it or run Test run (CPU only) in Diagnostics.")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.textDim)
                     Toggle("Show speed stats", isOn: Binding(get: { session.showStats },
                                                              set: { session.showStats = $0; session.persist() }))
                     Toggle("Low memory mode", isOn: Binding(get: { session.settings.lowMemory },
@@ -100,6 +105,7 @@ struct SettingsView: View {
                                                                 if value {
                                                                     session.settings.contextLength = 2048
                                                                     session.settings.maxTokens = 256
+                                                                    session.settings.gpuLayers = 0
                                                                 }
                                                                 session.persist()
                                                             }))

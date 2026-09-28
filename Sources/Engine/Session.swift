@@ -8,7 +8,7 @@ struct GenSettings: Codable, Equatable {
     var topP: Float = 0.95
     var topK: Int32 = 40
     var repeatPenalty: Float = 1.1
-    var gpuLayers: Int32 = 999
+    var gpuLayers: Int32 = 0
     var lowMemory = false
     var systemPrompt = "You are Cortex, a helpful on-device assistant. Answer clearly and never claim to be a cloud service."
 }
@@ -40,6 +40,7 @@ final class Session: ObservableObject {
             settings.lowMemory = true
             settings.contextLength = 2048
             settings.maxTokens = 256
+            settings.gpuLayers = 0
             persist()
             LogSink.shared.append("crash breadcrumb found: \(stale) — switched to low memory mode")
         }
