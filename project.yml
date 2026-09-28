@@ -7,7 +7,6 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    GCC_C_LANGUAGE_STANDARD: gnu17
     ENABLE_USER_SCRIPT_SANDBOXING: "NO"
 targets:
   Cortex:
@@ -15,22 +14,48 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+    info:
+      path: Support/Info.plist
+      properties:
+        CFBundleDisplayName: Cortex
+        CFBundleName: Cortex
+        CFBundleShortVersionString: "2.0"
+        CFBundleVersion: "2"
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen:
+          UIColorName: ""
+        UIApplicationSupportsIndirectInputEvents: true
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        NSPhotoLibraryUsageDescription: Attach photos so the on-device model can see them.
+        NSCameraUsageDescription: Take a photo for the on-device model.
+        NSMicrophoneUsageDescription: Dictate messages with on-device speech recognition.
+        NSSpeechRecognitionUsageDescription: Transcribe your voice into the composer on device.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.neo664evr.gguf
+            UTTypeDescription: GGUF model
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - gguf
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: GGUF model
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.neo664evr.gguf
+              - public.data
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.neo664evr.cortex
         PRODUCT_NAME: Cortex
-        GENERATE_INFOPLIST_FILE: "YES"
-        CURRENT_PROJECT_VERSION: "1"
-        MARKETING_VERSION: "1.0"
-        INFOPLIST_KEY_CFBundleDisplayName: Cortex
-        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
-        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: "YES"
-        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "Attach photos so the on-device model can see them."
-        INFOPLIST_KEY_NSCameraUsageDescription: "Take a photo for the on-device model."
-        INFOPLIST_KEY_UIFileSharingEnabled: "YES"
-        INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: "YES"
-        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) CORTEX"
+        GENERATE_INFOPLIST_FILE: "NO"
+        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "2.0"
         OTHER_LDFLAGS: "-lc++"
         HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/llama.xcframework/ios-arm64/llama.framework/Headers"
     dependencies:

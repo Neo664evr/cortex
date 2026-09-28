@@ -62,6 +62,7 @@ final class Inference {
     private var sampler: UnsafeMutablePointer<llama_sampler>?
     private var batch = llama_batch_init(512, 0, 1)
     private var pieceBuffer: [CChar] = []
+    private var promptTokens = 0
     private var stopFlag = false
     private var activeModel: String?
     private var activeMmproj: String?
@@ -69,7 +70,37 @@ final class Inference {
 
     private let queue = DispatchQueue(label: "com.neo664evr.cortex.inference", qos: .userInitiated)
 
+    struct GenStats {
+        var promptTokens: Int
+        var generatedTokens: Int
+        var seconds: Double
+        var tokensPerSecond: Double
+        var label: String {
+            String(format: "%d tok in, %d out, %.1f tok/s", promptTokens, generatedTokens, tokensPerSecond)
+        }
+    }
+
+    private(set) var lastStats: GenStats?
+
     var isLoaded: Bool { model != nil && ctx != nil }
+    var contextSize: Int32 { ctx != nil ? llama_n_ctx(ctx) : 0 }
+
+    /// Human-readable model facts for the Models screen.
+    func modelInfo() -> [(String, String)] {
+        guard let model else { return [] }
+        var buffer = [CChar](repeating: 0, count: 256)
+        llama_model_desc(model, &buffer, 256)
+        let description = String(cString: buffer)
+        let params = Double(llama_model_n_params(model)) / 1_000_000_000
+        let trained = llama_model_n_ctx_train(model)
+        return [
+            ("Model", description),
+            ("Parameters", String(format: "%.2f B", params)),
+            ("Trained context", "\(trained)"),
+            ("Loaded context", "\(contextSize)"),
+            ("Vision", hasVision ? "on" : "off")
+        ]
+    }
     var loadedModel: String? { activeModel }
     var hasVision: Bool { mtmd != nil }
 
@@ -193,12 +224,15 @@ final class Inference {
         var nPast: llama_pos = 0
         if !imageData.isEmpty, let mtmd {
             nPast = try evaluateMultimodal(prompt: prompt, images: imageData, mtmd: mtmd, ctx: ctx)
+            promptTokens = Int(nPast)
         } else {
             nPast = try evaluateText(prompt: prompt, ctx: ctx)
+            promptTokens = Int(nPast)
         }
 
         try buildSampler()
 
+        let started = Date()
         var generated: Int32 = 0
         while generated < settings.maxTokens {
             if stopFlag { break }
@@ -230,6 +264,9 @@ final class Inference {
             pieceBuffer.removeAll()
             if !tail.isEmpty { continuation.yield(tail) }
         }
+        let elapsed = max(0.001, Date().timeIntervalSince(started))
+        lastStats = GenStats(promptTokens: promptTokens, generatedTokens: Int(generated),
+                             seconds: elapsed, tokensPerSecond: Double(generated) / elapsed)
         _ = model
     }
 

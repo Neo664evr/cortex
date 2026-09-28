@@ -23,6 +23,7 @@ struct ChatMessage: Identifiable, Codable, Hashable {
     var role: Role
     var text: String
     var attachments: [Attachment] = []
+    var stats: String? = nil
     var createdAt = Date()
 }
 
@@ -91,6 +92,25 @@ final class ChatStore: ObservableObject {
         chats[chatIndex].messages[messageIndex].text = text
         chats[chatIndex].updatedAt = Date()
         save()
+    }
+
+    func setStats(_ stats: String, messageID: UUID, in chatID: UUID) {
+        guard let chatIndex = chats.firstIndex(where: { $0.id == chatID }),
+              let messageIndex = chats[chatIndex].messages.firstIndex(where: { $0.id == messageID }) else { return }
+        chats[chatIndex].messages[messageIndex].stats = stats
+        save()
+    }
+
+    func exportText(_ chat: Chat) -> String {
+        var out = "# \(chat.title)\n\n"
+        for message in chat.messages {
+            out += message.role == .user ? "**You**" : "**Cortex**"
+            out += "\n\(message.text)\n\n"
+            for attachment in message.attachments {
+                out += "_(attachment: \(attachment.name))_\n"
+            }
+        }
+        return out
     }
 
     func remove(messageID: UUID, in chatID: UUID) {
