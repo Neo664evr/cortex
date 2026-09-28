@@ -1,0 +1,9 @@
+Vendor/
+third_party/
+build/
+DerivedData/
+*.ipa
+Payload/
+.DS_Store
+xcuserdata/
+Cortex.xcodeproj/

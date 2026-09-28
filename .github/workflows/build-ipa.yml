@@ -1,0 +1,81 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  LLAMA_TAG: v0.5.0
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache llama.cpp xcframework
+        id: cache-llama
+        uses: actions/cache@v4
+        with:
+          path: Vendor/llama.xcframework
+          key: llama-xcframework-${{ env.LLAMA_TAG }}-ios
+
+      - name: Build llama.cpp xcframework (device)
+        if: steps.cache-llama.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$LLAMA_TAG" https://github.com/ggml-org/llama.cpp third_party/llama.cpp
+          cd third_party/llama.cpp
+          ./build-xcframework.sh ios-device
+          mkdir -p ../../Vendor
+          rm -rf ../../Vendor/llama.xcframework
+          cp -R build-apple/llama.xcframework ../../Vendor/
+          ls -la ../../Vendor/llama.xcframework
+
+      - name: Show framework
+        run: find Vendor/llama.xcframework -maxdepth 3 | head -40
+
+      - name: Install XcodeGen
+        run: brew install xcodegen || brew upgrade xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build app (unsigned)
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project Cortex.xcodeproj \
+            -scheme Cortex \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build | tail -60
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          echo "App: $APP"
+          test -n "$APP"
+          rm -rf Payload Cortex-unsigned.ipa
+          mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry Cortex-unsigned.ipa Payload
+          unzip -l Cortex-unsigned.ipa | head -12
+          ls -l Cortex-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: cortex-ipa
+          path: Cortex-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Build log tail on failure
+        if: failure()
+        run: echo "see xcodebuild output above"
