@@ -99,6 +99,46 @@ final class Session: ObservableObject {
     /// Free memory hint for the UI.
     var memoryNote: String { engine.deviceMemoryNote }
 
+    /// Two one-time engine self-tests so a crashing engine identifies itself without
+    /// anyone needing to dig a log file out of the sandbox.
+    func autoDiagnoseIfNeeded(models: ModelStore) async {
+        let key = "cortex.autotest"
+        guard let model = models.selectedModel, !isGenerating else { return }
+        let phase = defaults.string(forKey: key) ?? "cpu"
+        if phase == "done" { return }
+
+        if phase == "cpu" {
+            defaults.set("metal", forKey: key)
+            Breadcrumb.set("autotest CPU only")
+            status = "self-test: CPU"
+            let report = await engine.smokeTest(modelPath: model.path,
+                                                projectorPath: models.selectedProjector?.path,
+                                                settings: settings, gpuLayers: 0)
+            diagnosticsReport = "auto test 1/2 (CPU only)\n" + report
+            Breadcrumb.clear()
+            status = "idle"
+            return
+        }
+
+        if phase == "metal" {
+            defaults.set("done", forKey: key)
+            Breadcrumb.set("autotest Metal \(settings.gpuLayers > 0 ? settings.gpuLayers : 999) layers")
+            status = "self-test: Metal"
+            let report = await engine.smokeTest(modelPath: model.path,
+                                                projectorPath: models.selectedProjector?.path,
+                                                settings: settings,
+                                                gpuLayers: settings.gpuLayers > 0 ? settings.gpuLayers : 999)
+            diagnosticsReport = (diagnosticsReport.isEmpty ? "" : diagnosticsReport + "\n\n") + "auto test 2/2 (Metal)\n" + report
+            Breadcrumb.clear()
+            status = "idle"
+        }
+    }
+
+    /// Re-runs the self tests when the user taps Diagnostics → Test.
+    func resetAutoDiagnostics() {
+        defaults.removeObject(forKey: "cortex.autotest")
+    }
+
     func loadSelection(models: ModelStore, force: Bool) async {
         guard let model = models.selectedModel else {
             errorMessage = "Import a GGUF model first."

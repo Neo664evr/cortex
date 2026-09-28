@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
     @EnvironmentObject private var session: Session
@@ -155,6 +156,16 @@ struct SettingsView: View {
                         .frame(maxHeight: 260)
                         ShareLink(item: session.diagnosticsReport) { Label("Share report", systemImage: "square.and.arrow.up") }
                     }
+                    Button {
+                        session.resetAutoDiagnostics()
+                        Task { await session.autoDiagnoseIfNeeded(models: models) }
+                    } label: { Label("Run self tests again", systemImage: "arrow.triangle.2.circlepath") }
+                    Button {
+                        UIPasteboard.general.string = session.diagnosticsReport
+                    } label: { Label("Copy report to clipboard", systemImage: "doc.on.doc") }
+                    Button {
+                        UIPasteboard.general.string = LogSink.shared.tail()
+                    } label: { Label("Copy engine log", systemImage: "list.bullet.rectangle") }
                     Button("Clear engine log") {
                         LogSink.shared.clear()
                         session.diagnosticsReport = ""
@@ -164,7 +175,7 @@ struct SettingsView: View {
                 Section {
                     Button { session.unload() } label: { Label("Unload model", systemImage: "eject") }
                     LabeledContent("Engine", value: "llama.cpp v0.5.0 · Metal")
-                    LabeledContent("Build", value: "Cortex 2.1")
+                    LabeledContent("Build", value: "Cortex 2.2")
                     LabeledContent("Models", value: "\(models.models.count) · \(models.projectors.count) projectors")
                     Button("Reset sampler settings") {
                         session.settings = GenSettings()

@@ -73,7 +73,7 @@ struct ModelsView: View {
                 } header: {
                     SectionHeader(title: "Add models")
                 } footer: {
-                    Text("Files app route: open Files -> On My iPhone -> Cortex -> Models, and drop .gguf files there. They appear after Rescan storage.")
+                    Text("Print path inside LiveContainer: turn on Fix File Picker in LiveContainer before choosing a model, then pick the .gguf from Files. URL downloads land in the app's Models folder directly.")
                 }
 
                 Section {

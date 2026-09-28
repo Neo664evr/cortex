@@ -19,8 +19,8 @@ targets:
       properties:
         CFBundleDisplayName: Cortex
         CFBundleName: Cortex
-        CFBundleShortVersionString: "2.1"
-        CFBundleVersion: "3"
+        CFBundleShortVersionString: "2.2"
+        CFBundleVersion: "4"
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen:
           UIColorName: ""
@@ -54,8 +54,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.neo664evr.cortex
         PRODUCT_NAME: Cortex
         GENERATE_INFOPLIST_FILE: "NO"
-        CURRENT_PROJECT_VERSION: "3"
-        MARKETING_VERSION: "2.1"
+        CURRENT_PROJECT_VERSION: "4"
+        MARKETING_VERSION: "2.2"
         OTHER_LDFLAGS: "-lc++"
         HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/llama.xcframework/ios-arm64/llama.framework/Headers"
     dependencies:
