@@ -60,8 +60,7 @@ final class Inference {
     private var vocab: OpaquePointer?
     private var mtmd: OpaquePointer?
     private var sampler: UnsafeMutablePointer<llama_sampler>?
-    private var batch = llama_batch()
-    private var batchReady = false
+    private var batch = llama_batch_init(512, 0, 1)
     private var pieceBuffer: [CChar] = []
     private var stopFlag = false
     private var activeModel: String?
@@ -79,7 +78,7 @@ final class Inference {
     }
 
     func unload() {
-        if batchReady { llama_batch_free(batch); batchReady = false }
+        llama_batch_free(batch)
         if let sampler { llama_sampler_free(sampler); self.sampler = nil }
         if let mtmd { mtmd_free(mtmd); self.mtmd = nil }
         if let ctx { llama_free(ctx); self.ctx = nil }
@@ -122,7 +121,7 @@ final class Inference {
             var tparams = mtmd_context_params_default()
             tparams.use_gpu = true
             tparams.print_timings = false
-            tparams.n_threads = Int(threads)
+            tparams.n_threads = threads
             tparams.image_max_tokens = 1024
             guard let mctx = mtmd_init_from_file(mmprojPath, loaded, tparams) else {
                 llama_free(context)
@@ -134,8 +133,6 @@ final class Inference {
             mtmd = mctx
         }
 
-        batch = llama_batch_init(512, 0, 1)
-        batchReady = true
         activeModel = modelPath
         activeMmproj = mmprojPath ?? ""
     }
@@ -240,7 +237,7 @@ final class Inference {
         if let sampler { llama_sampler_free(sampler) }
         let params = llama_sampler_chain_default_params()
         guard let chain = llama_sampler_chain_init(params) else { throw InferenceError.decode }
-        llama_sampler_chain_add(chain, llama_sampler_init_penalties(64, settings.repeatPenalty, 0.0, 0.0))
+        llama_sampler_chain_add(chain, llama_sampler_init_penalties(llama_vocab_n_tokens(vocab), 64, settings.repeatPenalty, 0.0, 0.0))
         llama_sampler_chain_add(chain, llama_sampler_init_top_k(settings.topK))
         llama_sampler_chain_add(chain, llama_sampler_init_top_p(settings.topP, 1))
         llama_sampler_chain_add(chain, llama_sampler_init_temp(settings.temperature))
